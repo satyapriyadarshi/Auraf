@@ -3,17 +3,26 @@ import { Sprout, IndianRupee, Upload, ArrowLeft, Info, CheckCircle2 } from 'luci
 import { useApp } from '@/context/AppContext';
 import { MarketInfoCard } from '@/components/ui/MarketInfoCard';
 import { categories, productGrades, units } from '@/data/mockData';
-import { calculateProductListingScore, extractAiVerificationResult, getAiVerificationSummary } from '@/utils/aiVerification';
+import { buildProductDescription, calculateProductListingScore, extractAiVerificationResult, getAiRatingLabel, getAiVerificationSummary } from '@/utils/aiVerification';
 
 const DEFAULT_PRODUCT_IMAGE = 'https://images.pexels.com/photos/533280/pexels-photo-533280.jpeg?auto=compress&cs=tinysrgb&w=600';
+const PRODUCT_WEBHOOK_URL = 'https://satyapriyadarshi-87.app.n8n.cloud/webhook/send';
+const AI_VERIFICATION_URL = import.meta.env.DEV
+  ? '/api/verify-product'
+  : 'https://satyapriyadarshi-87.app.n8n.cloud/webhook/grade-produce';
 
 export function AddProducePage() {
   const { navigate, addProduct, showToast, user } = useApp();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [isProcessingBackground, setIsProcessingBackground] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [webhookScore, setWebhookScore] = useState<number | null>(null);
   const [webhookSummary, setWebhookSummary] = useState<string>('');
+  const [webhookProductDescription, setWebhookProductDescription] = useState<string>('');
+  const [webhookRatingReason, setWebhookRatingReason] = useState<string>('');
+  const [webhookAssessment, setWebhookAssessment] = useState<ReturnType<typeof extractAiVerificationResult>['assessment']>(undefined);
+  const [hasN8nRating, setHasN8nRating] = useState(false);
   const [form, setForm] = useState({
     name: '',
     category: 'Vegetables' as const,
@@ -64,11 +73,14 @@ export function AddProducePage() {
 
     try {
       const metadata = {
-        message: 'Farmer produce image quality grading request',
+        message: 'Farmer produce AI rating request',
+        productName: form.name,
         produceName: form.name,
+        type: form.category,
         category: form.category,
         quantity: form.quantity,
         unit: form.unit,
+        price: form.sellingPrice,
         sellingPrice: form.sellingPrice,
         harvestDate: form.harvestDate || new Date().toISOString().slice(0, 10),
         grade: form.grade,
@@ -78,37 +90,39 @@ export function AddProducePage() {
         imageFileName: imageFile.name,
         imageMimeType: imageFile.type || 'application/octet-stream',
         imageSizeBytes: imageFile.size,
-        imageDataText: form.image,
-        imageBase64: form.image.startsWith('data:') ? form.image.split(',')[1] : '',
+        imageUrl: form.image || DEFAULT_PRODUCT_IMAGE,
         aiScore,
         aiSummary,
+        ratingInstructions: 'Assess the submitted produce image and listing details. Return a JSON object with exactly these fields: grade, quality_assessment, matches_stated_details, price_assessment, suggestions_for_farmer. Base claims on the submitted image and listing details; do not invent observations.',
       };
 
-      const rawBytes = new Uint8Array(await imageFile.arrayBuffer());
-      const metadataBytes = new TextEncoder().encode(JSON.stringify(metadata));
-      const binaryPayload = new Blob([metadataBytes, new Uint8Array([10]), rawBytes], {
-        type: imageFile.type || 'application/octet-stream',
-      });
+      const formPayload = new FormData();
+      Object.entries(metadata).forEach(([key, value]) => formPayload.append(key, String(value)));
+      formPayload.append('image', imageFile, imageFile.name);
 
-      const response = await fetch('https://satyapriya3456.app.n8n.cloud/webhook/grade-image', {
+      const response = await fetch(AI_VERIFICATION_URL, {
         method: 'POST',
         headers: {
           Accept: 'application/json',
-          'Content-Type': imageFile.type || 'application/octet-stream',
         },
-        body: binaryPayload,
+        body: formPayload,
       });
+
+      const responseText = await response.text();
 
       if (!response.ok) {
         throw new Error(`Webhook returned ${response.status}`);
       }
 
-      const responseText = await response.text();
       console.log('Grade image webhook response:', responseText);
 
       const result = extractAiVerificationResult(responseText, aiScore);
       setWebhookScore(result.score);
       setWebhookSummary(result.summary);
+      setWebhookProductDescription(result.productDescription || buildProductDescription(form));
+      setWebhookRatingReason(result.ratingReason || result.summary);
+      setWebhookAssessment(result.assessment);
+      setHasN8nRating(result.source === 'n8n');
 
       if (/temporarily unavailable/i.test(result.summary)) {
         showToast('AI service is temporarily unavailable; using local verification score.', 'success');
@@ -120,6 +134,10 @@ export function AddProducePage() {
       const fallbackResult = extractAiVerificationResult(null, aiScore);
       setWebhookScore(fallbackResult.score);
       setWebhookSummary(fallbackResult.summary);
+      setWebhookProductDescription('');
+      setWebhookRatingReason('');
+      setWebhookAssessment(undefined);
+      setHasN8nRating(false);
       showToast('AI service is unavailable right now; using the local verification score instead.', 'success');
     } finally {
       setIsProcessingBackground(false);
@@ -135,7 +153,7 @@ export function AddProducePage() {
     await verifyWithAi();
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name || !form.quantity || !form.sellingPrice) {
       showToast('Please fill in all required fields', 'error');
@@ -143,21 +161,50 @@ export function AddProducePage() {
     }
 
     const finalImage = form.image || DEFAULT_PRODUCT_IMAGE;
-    addProduct({
-      name: form.name,
-      category: form.category,
-      quantity: Number(form.quantity),
-      unit: form.unit,
-      sellingPrice: Number(form.sellingPrice),
-      harvestDate: form.harvestDate || new Date().toISOString().slice(0, 10),
-      grade: form.grade,
-      availableFrom: form.availableFrom || new Date().toISOString().slice(0, 10),
-      location: form.location,
-      distance: Math.floor(Math.random() * 30) + 5,
-      image: finalImage,
-    });
-    showToast('Produce successfully listed.', 'success');
-    navigate({ name: 'myProduce' });
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch(PRODUCT_WEBHOOK_URL, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          imageUrl: finalImage,
+          productName: form.name,
+          price: form.sellingPrice,
+          category: form.category,
+          location: form.location,
+          quantity: form.quantity,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Webhook returned ${response.status}`);
+      }
+
+      addProduct({
+        name: form.name,
+        category: form.category,
+        quantity: Number(form.quantity),
+        unit: form.unit,
+        sellingPrice: Number(form.sellingPrice),
+        harvestDate: form.harvestDate || new Date().toISOString().slice(0, 10),
+        grade: form.grade,
+        availableFrom: form.availableFrom || new Date().toISOString().slice(0, 10),
+        location: form.location,
+        distance: Math.floor(Math.random() * 30) + 5,
+        image: finalImage,
+      });
+      showToast('Produce sent and successfully listed.', 'success');
+      navigate({ name: 'myProduce' });
+    } catch (error) {
+      console.error('Product webhook error:', error);
+      showToast('Could not send produce details. Please try again.', 'error');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -334,26 +381,65 @@ export function AddProducePage() {
           <p className="text-xs text-gray-400 mt-1.5">Upload a clear image for AI verification and better buyer trust.</p>
         </div>
 
-        <div className="rounded-2xl border border-brand-100 bg-brand-50 px-4 py-3">
+        <section className="rounded-2xl border border-brand-100 bg-brand-50 px-4 py-3" aria-live="polite">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs uppercase tracking-wide text-brand-700 font-semibold">AI Verification</p>
+              <p className="text-xs uppercase tracking-wide text-brand-700 font-semibold">{hasN8nRating ? 'AI Product Rating' : 'AI Verification'}</p>
               <p className="text-sm text-gray-700 mt-1">{webhookSummary || aiSummary}</p>
             </div>
             <div className="flex items-center gap-2 rounded-full bg-white px-3 py-1.5 shadow-sm">
               <CheckCircle2 className="w-4 h-4 text-brand-600" />
-              <span className="text-sm font-bold text-brand-700">{webhookScore ?? aiScore}/100</span>
+              <span className="text-sm font-bold text-brand-700">
+                {webhookAssessment?.grade
+                  ? `Grade ${webhookAssessment.grade}`
+                  : `${getAiRatingLabel(webhookScore ?? aiScore)} · ${webhookScore ?? aiScore}/100`}
+              </span>
             </div>
           </div>
-        </div>
+          {webhookAssessment && (
+            <div className="mt-4 space-y-4 border-t border-brand-100 pt-3">
+              {webhookAssessment.grade && (
+                <div className="flex items-center justify-between gap-3">
+                  <h2 className="text-sm font-semibold text-gray-900">Produce grade</h2>
+                  <span className="text-lg font-bold text-brand-700">{webhookAssessment.grade}</span>
+                </div>
+              )}
+              {webhookAssessment.qualityAssessment && <AssessmentSection title="Quality assessment" text={webhookAssessment.qualityAssessment} />}
+              {webhookAssessment.matchesStatedDetails && <AssessmentSection title="Matches stated details" text={webhookAssessment.matchesStatedDetails} />}
+              {webhookAssessment.priceAssessment && <AssessmentSection title="Price assessment" text={webhookAssessment.priceAssessment} />}
+              {webhookAssessment.suggestionsForFarmer && <AssessmentSection title="Suggestions for farmer" text={webhookAssessment.suggestionsForFarmer} />}
+            </div>
+          )}
+          {hasN8nRating && (
+            <div className="mt-4 space-y-3 border-t border-brand-100 pt-3">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Product description</h2>
+                <p className="mt-1 text-sm leading-6 text-gray-700">{webhookProductDescription}</p>
+              </div>
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Why this rating</h2>
+                <p className="mt-1 text-sm leading-6 text-gray-700">{webhookRatingReason || 'The AI did not provide a detailed explanation for this score.'}</p>
+              </div>
+            </div>
+          )}
+        </section>
 
-        <button type="submit" className="btn-primary w-full py-3.5 text-base">
+        <button type="submit" disabled={isSubmitting} className="btn-primary w-full py-3.5 text-base disabled:opacity-50 disabled:cursor-not-allowed">
           <Sprout className="w-4.5 h-4.5" />
-          List Produce
+          {isSubmitting ? 'Sending...' : 'List Produce'}
         </button>
       </form>
 
       <MarketInfoCard priceLow={30} priceHigh={34} productName={form.name || 'Your produce'} />
+    </div>
+  );
+}
+
+function AssessmentSection({ title, text }: { title: string; text: string }) {
+  return (
+    <div>
+      <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
+      <p className="mt-1 text-sm leading-6 text-gray-700">{text}</p>
     </div>
   );
 }

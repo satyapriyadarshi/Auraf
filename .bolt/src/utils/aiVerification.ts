@@ -11,6 +11,21 @@ export type ProductVerificationInput = {
   image?: string;
 };
 
+export type AiVerificationResult = {
+  score: number;
+  summary: string;
+  productDescription?: string;
+  ratingReason?: string;
+  assessment?: {
+    grade?: string;
+    qualityAssessment?: string;
+    matchesStatedDetails?: string;
+    priceAssessment?: string;
+    suggestionsForFarmer?: string;
+  };
+  source: 'n8n' | 'local';
+};
+
 export function calculateProductListingScore(input: ProductVerificationInput): number {
   let score = 30;
 
@@ -44,7 +59,29 @@ export function getAiVerificationSummary(score: number): string {
   return 'Needs attention: complete the required fields and upload a clear product image.';
 }
 
-export function extractAiVerificationResult(responseText: string | null | undefined, fallbackScore: number) {
+export function getAiRatingLabel(score: number): string {
+  if (score >= 85) return 'Excellent';
+  if (score >= 70) return 'Good';
+  if (score >= 50) return 'Fair';
+  return 'Needs improvement';
+}
+
+export function buildProductDescription(input: ProductVerificationInput): string {
+  const name = input.name?.trim() || 'Produce';
+  const category = input.category || 'Uncategorized';
+  const quantity = input.quantity || 'an unspecified quantity';
+  const unit = input.unit || '';
+  const price = input.sellingPrice ? `₹${input.sellingPrice}/${unit || 'unit'}` : 'an unspecified price';
+  const location = input.location?.trim() || 'location not provided';
+  const grade = input.grade ? `, listed as ${input.grade}` : '';
+
+  return `${name} is listed in ${category} with ${quantity}${unit ? ` ${unit}` : ''} available at ${price} in ${location}${grade}.`;
+}
+
+export function extractAiVerificationResult(
+  responseText: string | null | undefined,
+  fallbackScore: number,
+): AiVerificationResult {
   const safeFallback = Number.isFinite(fallbackScore) ? Math.min(100, Math.max(0, Number(fallbackScore))) : 0;
   const trimmedText = (responseText ?? '').trim();
 
@@ -52,6 +89,7 @@ export function extractAiVerificationResult(responseText: string | null | undefi
     return {
       score: safeFallback,
       summary: `AI verification service is temporarily unavailable. Using local score: ${safeFallback}/100.`,
+      source: 'local',
     };
   }
 
@@ -59,6 +97,7 @@ export function extractAiVerificationResult(responseText: string | null | undefi
     return {
       score: safeFallback,
       summary: `AI verification service is temporarily unavailable. Using local score: ${safeFallback}/100.`,
+      source: 'local',
     };
   }
 
@@ -68,17 +107,52 @@ export function extractAiVerificationResult(responseText: string | null | undefi
     return {
       score: normalizedScore,
       summary: `AI rating: ${normalizedScore}/100`,
+      source: 'n8n',
     };
   }
 
   try {
-    const parsedResponse = JSON.parse(trimmedText);
-    const parsedScore = Number(parsedResponse?.score ?? parsedResponse?.rating ?? parsedResponse?.imageQualityScore ?? parsedResponse?.aiRating ?? safeFallback);
+    let parsedResponse: unknown = JSON.parse(trimmedText);
+    if (Array.isArray(parsedResponse)) parsedResponse = parsedResponse[0];
+    if (parsedResponse && typeof parsedResponse === 'object') {
+      const outer = parsedResponse as Record<string, unknown>;
+      const nested = outer.output ?? outer.data ?? outer.response;
+      if (nested && typeof nested === 'object') {
+        parsedResponse = nested;
+      } else if (typeof nested === 'string') {
+        try {
+          parsedResponse = JSON.parse(nested);
+        } catch {
+          parsedResponse = { ...outer, output: nested };
+        }
+      }
+    }
+
+    const record = parsedResponse && typeof parsedResponse === 'object'
+      ? parsedResponse as Record<string, unknown>
+      : {};
+    const rawScore = record.score ?? record.rating ?? record.imageQualityScore ?? record.aiRating;
+    const assessment = {
+      grade: stringValue(record, ['grade']),
+      qualityAssessment: stringValue(record, ['quality_assessment', 'qualityAssessment']),
+      matchesStatedDetails: stringValue(record, ['matches_stated_details', 'matchesStatedDetails']),
+      priceAssessment: stringValue(record, ['price_assessment', 'priceAssessment']),
+      suggestionsForFarmer: stringValue(record, ['suggestions_for_farmer', 'suggestionsForFarmer']),
+    };
+    const numericScore = Number(rawScore);
+    const extractedScore = Number.isFinite(numericScore)
+      ? numericScore
+      : Number(String(rawScore ?? '').match(/\d+(?:\.\d+)?/)?.[0] ?? safeFallback);
+    const parsedScore = rawScore === undefined ? safeFallback : extractedScore;
     if (Number.isFinite(parsedScore)) {
       const normalizedScore = Math.min(100, Math.max(0, parsedScore));
       return {
         score: normalizedScore,
-        summary: String(parsedResponse?.summary ?? parsedResponse?.message ?? parsedResponse?.result ?? parsedResponse?.imageQualitySummary ?? `AI rating: ${normalizedScore}/100`),
+        summary: String(record.summary ?? record.message ?? record.result ?? record.imageQualitySummary ?? (assessment.grade ? `AI assessment: Grade ${assessment.grade}` : `AI rating: ${normalizedScore}/100`)),
+        productDescription: stringValue(record, ['productDescription', 'product_description', 'productSummary', 'product_summary', 'description']),
+        ratingReason: stringValue(record, ['ratingReason', 'rating_reason', 'reason', 'justification', 'explanation', 'whyThisRating']),
+        assessment: Object.values(assessment).some(Boolean) ? assessment : undefined,
+        source: 'n8n',
       };
     }
   } catch {
@@ -91,11 +165,21 @@ export function extractAiVerificationResult(responseText: string | null | undefi
     return {
       score: normalizedScore,
       summary: `AI rating: ${normalizedScore}/100`,
+      source: 'n8n',
     };
   }
 
   return {
     score: safeFallback,
     summary: trimmedText || `AI rating: ${safeFallback}/100`,
+    source: 'n8n',
   };
+}
+
+function stringValue(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
 }

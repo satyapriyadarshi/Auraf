@@ -10,6 +10,15 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  server: {
+    proxy: {
+      '/api/verify-product': {
+        target: 'https://satyapriyadarshi-87.app.n8n.cloud',
+        changeOrigin: true,
+        rewrite: () => '/webhook/grade-produce',
+      },
+    },
+  },
   optimizeDeps: {
     exclude: ['lucide-react'],
   },
