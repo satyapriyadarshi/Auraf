@@ -155,8 +155,10 @@ export function AddProducePage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!form.name || !form.quantity || !form.sellingPrice) {
-      showToast('Please fill in all required fields', 'error');
+    const quantity = Number(form.quantity);
+    const sellingPrice = Number(form.sellingPrice);
+    if (!form.name.trim() || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(sellingPrice) || sellingPrice <= 0) {
+      showToast('Enter a product name and positive quantity and price.', 'error');
       return;
     }
 
@@ -187,9 +189,9 @@ export function AddProducePage() {
       addProduct({
         name: form.name,
         category: form.category,
-        quantity: Number(form.quantity),
+        quantity,
         unit: form.unit,
-        sellingPrice: Number(form.sellingPrice),
+        sellingPrice,
         harvestDate: form.harvestDate || new Date().toISOString().slice(0, 10),
         grade: form.grade,
         availableFrom: form.availableFrom || new Date().toISOString().slice(0, 10),
@@ -262,6 +264,8 @@ export function AddProducePage() {
             <label className="label">Quantity *</label>
             <input
               type="number"
+              min="0.01"
+              step="any"
               value={form.quantity}
               onChange={(e) => setForm({ ...form, quantity: e.target.value })}
               placeholder="500"
@@ -288,6 +292,8 @@ export function AddProducePage() {
             <IndianRupee className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4.5 h-4.5 text-gray-400" />
             <input
               type="number"
+              min="0.01"
+              step="any"
               value={form.sellingPrice}
               onChange={(e) => setForm({ ...form, sellingPrice: e.target.value })}
               placeholder="32"

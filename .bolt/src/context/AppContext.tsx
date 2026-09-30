@@ -148,14 +148,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setRole = useCallback((role: UserRole) => {
     setUser((prev) => {
       if (!prev) return prev;
-      const roleUser = Object.values(mockUsers).find((u) => u.role === role);
-      return {
-        ...prev,
-        role,
-        name: roleUser?.name ?? prev.name,
-        location: roleUser?.location ?? prev.location,
-        verified: roleUser?.verified ?? prev.verified,
-      };
+      return { ...prev, role };
     });
     switch (role) {
       case 'farmer':
@@ -230,6 +223,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createdAt: new Date().toISOString().slice(0, 10),
     };
     setOrders((prev) => [newOrder, ...prev]);
+    setTransportJobs((prev) => [{
+      id: `tj-${orderId}`,
+      orderId,
+      productName: product.name,
+      productImage: product.image,
+      pickupLocation: product.location,
+      deliveryLocation,
+      distance: product.distance,
+      load: quantity,
+      unit: product.unit,
+      estimatedEarnings: Math.round(product.distance * 15 + 100),
+      status: 'Available',
+      farmerName: product.farmerName,
+      buyerName: user.name,
+    }, ...prev]);
     setProducts((prev) =>
       prev.map((p) =>
         p.id === productId ? { ...p, quantity: Math.max(0, p.quantity - quantity), buyerInterest: p.buyerInterest + 1 } : p
